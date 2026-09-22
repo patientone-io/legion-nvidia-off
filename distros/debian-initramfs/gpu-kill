@@ -1,0 +1,19 @@
+#!/bin/sh
+PREREQ=""
+prereqs() {
+    echo "$PREREQ"
+}
+case $1 in
+prereqs)
+    prereqs
+    exit 0
+    ;;
+esac
+
+. /usr/share/initramfs-tools/hook-functions
+
+# Kopiowanie reguły udev wyłączającej dGPU do obrazu initramfs
+if [ -f /etc/udev/rules.d/99-nvidia-remove.rules ]; then
+    copy_file udev /etc/udev/rules.d/99-nvidia-remove.rules /lib/udev/rules.d/99-nvidia-remove.rules
+fi
+exit 0
