@@ -209,7 +209,7 @@ sudo reboot
 Typowe próby wyłączenia dGPU pod Linuksem na laptopach Legion z reguły nie dają zamierzonego efektu:
 
 1. **`envycontrol -s integrated` lub ręczne odłączanie w udev:**  
-   EnvyControl nakłada czarną listę modułów i wysyła `1` do `/sys/bus/pci/devices/.../remove`. Jednak w oprogramowaniu układowym (BIOS/ACPI) Lenovo Legion odłączenie sterownika lub usunięcie urządzenia z magistrali PCI pozostawia kartę w stanie **D0**. Chip nadal pobiera **15–25W**, drenując baterię w półtorej godziny.
+   EnvyControl dodaje moduły jądra do blacklisty (w modprobe) i wysyła `1` do `/sys/bus/pci/devices/.../remove`. Jednak w oprogramowaniu układowym (BIOS/ACPI) Lenovo Legion odłączenie sterownika lub usunięcie urządzenia z magistrali PCI pozostawia kartę w stanie **D0**. Chip nadal pobiera **15–25W**, drenując baterię w półtorej godziny.
 2. **`bbswitch`:**  
    Przestarzały moduł, nie działa na współczesnych kernelach ani na architekturach Ampere/Ada Lovelace.
 3. **`acpi_call` (DKMS):**  
