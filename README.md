@@ -272,7 +272,7 @@ flowchart TD
 | `common/gpu-off.dsl` | *(Kompilowany do `.aml`)* | Wszystkie | Źródło ACPI ASL ze zmienną OPCE |
 | `common/gpu-off.aml` | `/etc/dracut.conf.d/acpi/gpu-off.aml` | Arch / Fedora | Tabela SSDT wczytywana przez Dracuta |
 | `common/gpu-off.aml` | `/var/lib/acpi-override/gpu-off.aml` | Debian / Ubuntu | Tabela SSDT dla `acpi-override-initramfs` |
-| `common/blacklist-nvidia.conf` | `/etc/modprobe.d/blacklist-nvidia.conf` | Wszystkie | Czarna lista modułów jądra |
+| `common/blacklist-nvidia.conf` | `/etc/modprobe.d/blacklist-nvidia.conf` | Wszystkie | Blacklista modułów jądra (modprobe) |
 | `common/99-nvidia-remove.rules` | `/etc/udev/rules.d/99-nvidia-remove.rules` | Wszystkie | Reguła udev usuwająca dGPU z szyny PCI |
 | `distros/arch-dracut/gpu-kill.conf` | `/etc/dracut.conf.d/gpu-kill.conf` | Arch Linux | Flagi Dracuta (`acpi_override="yes"`) |
 | `distros/fedora-dracut/gpu-kill.conf` | `/etc/dracut.conf.d/gpu-kill.conf` | Fedora | Flagi Dracuta (`acpi_override="yes"`) |
