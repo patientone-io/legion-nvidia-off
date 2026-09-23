@@ -17,6 +17,8 @@ NC='\033[0m' # No Color
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 FORCE_YES=false
+COMPILED_AML=""
+BLACKLIST_CMD="rd.driver.blacklist=nouveau,nvidia,nvidia_drm,nvidia_modeset modprobe.blacklist=nouveau,nvidia,nvidia_drm,nvidia_modeset systemd.mask=nvidia-fallback.service"
 
 log_info() { echo -e "${CYAN}[INFO]${NC} $1"; }
 log_success() { echo -e "${GREEN}[OK]${NC} $1"; }
@@ -116,8 +118,22 @@ compile_acpi() {
         esac
     fi
 
-    iasl -tc "$SCRIPT_DIR/common/gpu-off.dsl"
-    log_success "Compiled ACPI binary: common/gpu-off.aml"
+    # Compile in an isolated tmp dir so the repo checkout stays clean
+    # (iasl -tc emits .aml + .hex next to the source).
+    local tmpdir
+    tmpdir="$(mktemp -d)"
+    cp "$SCRIPT_DIR/common/gpu-off.dsl" "$tmpdir/gpu-off.dsl"
+    if iasl -tc "$tmpdir/gpu-off.dsl" >/dev/null; then
+        COMPILED_AML="$tmpdir/gpu-off.aml"
+        log_success "Compiled ACPI binary: $COMPILED_AML"
+    elif [[ -f "$SCRIPT_DIR/common/gpu-off.aml" ]]; then
+        log_warn "iasl compilation failed, falling back to prebuilt common/gpu-off.aml"
+        COMPILED_AML="$SCRIPT_DIR/common/gpu-off.aml"
+        rmdir "$tmpdir" 2>/dev/null || true
+    else
+        log_error "iasl compilation failed and no prebuilt common/gpu-off.aml found."
+        exit 1
+    fi
 }
 
 install_common_files() {
@@ -136,19 +152,20 @@ install_arch() {
     log_info "Configuring Arch Linux / EndeavourOS (Dracut)..."
     
     mkdir -p /etc/dracut.conf.d/acpi
-    install -Dm644 "$SCRIPT_DIR/common/gpu-off.aml" /etc/dracut.conf.d/acpi/gpu-off.aml
+    install -Dm644 "$COMPILED_AML" /etc/dracut.conf.d/acpi/gpu-off.aml
     install -Dm644 "$SCRIPT_DIR/distros/arch-dracut/gpu-kill.conf" /etc/dracut.conf.d/gpu-kill.conf
     
     log_success "Installed ACPI override and Dracut configuration"
 
     # Kernel cmdline parameters
     CMDLINE_FILE="/etc/kernel/cmdline"
-    BLACKLIST_CMD="rd.driver.blacklist=nouveau,nvidia,nvidia_drm,nvidia_modeset modprobe.blacklist=nouveau,nvidia,nvidia_drm,nvidia_modeset systemd.mask=nvidia-fallback.service"
     
     if [[ -f "$CMDLINE_FILE" ]]; then
         if ! grep -q "rd.driver.blacklist=" "$CMDLINE_FILE"; then
             log_info "Adding blacklist parameters to $CMDLINE_FILE..."
             sed -i "s/$/ $BLACKLIST_CMD/" "$CMDLINE_FILE"
+        else
+            log_info "Blacklist parameters already present in $CMDLINE_FILE, skipping."
         fi
     else
         log_warn "$CMDLINE_FILE not found. If using systemd-boot, GRUB, or rEFInd, ensure you append these arguments to your kernel cmdline:"
@@ -172,15 +189,27 @@ install_fedora() {
     log_info "Configuring Fedora (Dracut + Grubby)..."
     
     mkdir -p /etc/dracut.conf.d/acpi
-    install -Dm644 "$SCRIPT_DIR/common/gpu-off.aml" /etc/dracut.conf.d/acpi/gpu-off.aml
+    install -Dm644 "$COMPILED_AML" /etc/dracut.conf.d/acpi/gpu-off.aml
     install -Dm644 "$SCRIPT_DIR/distros/fedora-dracut/gpu-kill.conf" /etc/dracut.conf.d/gpu-kill.conf
     
     log_success "Installed ACPI override into /etc/dracut.conf.d/"
 
-    BLACKLIST_CMD="rd.driver.blacklist=nouveau,nvidia,nvidia_drm,nvidia_modeset modprobe.blacklist=nouveau,nvidia,nvidia_drm,nvidia_modeset systemd.mask=nvidia-fallback.service"
     if command -v grubby &>/dev/null; then
-        log_info "Updating kernel command line parameters with grubby..."
-        grubby --update-kernel=ALL --args="$BLACKLIST_CMD"
+        # Idempotent: only append args that are not already present.
+        local current_args missing_args
+        current_args="$(grubby --info=ALL | grep -E '^args=' | head -n 1 || true)"
+        missing_args=""
+        for token in $BLACKLIST_CMD; do
+            if [[ "$current_args" != *"$token"* ]]; then
+                missing_args+="$token "
+            fi
+        done
+        if [[ -n "$missing_args" ]]; then
+            log_info "Updating kernel command line parameters with grubby..."
+            grubby --update-kernel=ALL --args="$missing_args"
+        else
+            log_info "Kernel arguments already present, skipping grubby."
+        fi
     fi
 
     log_info "Rebuilding initramfs (Dracut)..."
@@ -190,16 +219,34 @@ install_fedora() {
 install_debian() {
     log_info "Configuring Debian / Ubuntu (initramfs-tools)..."
     
-    if ! dpkg -l | grep -q acpi-override-initramfs; then
+    if ! dpkg -s acpi-override-initramfs &>/dev/null; then
         log_info "Installing acpi-override-initramfs..."
         apt-get update && apt-get install -y acpi-override-initramfs
     fi
 
     mkdir -p /var/lib/acpi-override
-    install -Dm644 "$SCRIPT_DIR/common/gpu-off.aml" /var/lib/acpi-override/gpu-off.aml
+    install -Dm644 "$COMPILED_AML" /var/lib/acpi-override/gpu-off.aml
     
     install -Dm755 "$SCRIPT_DIR/distros/debian-initramfs/gpu-kill" /etc/initramfs-tools/hooks/gpu-kill
     log_success "Installed initramfs hook in /etc/initramfs-tools/hooks/gpu-kill"
+
+    # Kernel cmdline parameters (same set as Arch/Fedora, idempotent).
+    GRUB_DEFAULTS="/etc/default/grub"
+    if [[ -f "$GRUB_DEFAULTS" ]]; then
+        if ! grep -q "rd.driver.blacklist=" "$GRUB_DEFAULTS"; then
+            log_info "Adding blacklist parameters to GRUB_CMDLINE_LINUX_DEFAULT in $GRUB_DEFAULTS..."
+            if grep -q '^GRUB_CMDLINE_LINUX_DEFAULT=' "$GRUB_DEFAULTS"; then
+                sed -i "s/^GRUB_CMDLINE_LINUX_DEFAULT=\"\(.*\)\"/GRUB_CMDLINE_LINUX_DEFAULT=\"\1 $BLACKLIST_CMD\"/" "$GRUB_DEFAULTS"
+            else
+                echo "GRUB_CMDLINE_LINUX_DEFAULT=\"$BLACKLIST_CMD\"" >> "$GRUB_DEFAULTS"
+            fi
+        else
+            log_info "Blacklist parameters already present in $GRUB_DEFAULTS, skipping."
+        fi
+    else
+        log_warn "$GRUB_DEFAULTS not found. Ensure you append these arguments to your kernel cmdline:"
+        log_warn "  $BLACKLIST_CMD"
+    fi
 
     log_info "Rebuilding initramfs image..."
     update-initramfs -u -k all

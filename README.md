@@ -26,12 +26,16 @@
 > On the Legion 5 Pro (16ACH6H), the physical HDMI port and rear USB-C DisplayPort alternate-mode pins are **hardwired directly to the NVIDIA dGPU**.  
 > When the dGPU is powered off, **external monitors connected to these ports will receive no signal**. The internal laptop display (eDP) is connected directly to the AMD Radeon iGPU and works with full refresh rate and brightness control. USB DisplayLink adapters are unaffected.
 
+> [!WARNING]
+> **SECURE BOOT MUST BE DISABLED**  
+> Loading a custom SSDT via `acpi_override` (`CONFIG_ACPI_TABLE_UPGRADE`) is blocked when Secure Boot is enabled. Disable Secure Boot in BIOS/UEFI before installing, otherwise `gpu-off.aml` will be silently ignored and the dGPU will stay powered on.
+
 ### 🔍 Why Standard Linux Tools Fail on Legion
 
 On hybrid laptops, disabling the dedicated GPU under Linux usually falls into one of these traps:
 
 1. **`envycontrol -s integrated` or manual udev remove:**  
-   EnvyControl blacklists kernel modules and writes `1` to `/sys/bus/pci/devices/.../remove`. However, on Lenovo Legion firmware, unbinding the driver or removing the device from the PCI bus leaves the physical chip in an unmanaged **D0 state**. The card remains powered on and continues drawing **15W–25W**, draining the battery in less than 2 hours.
+   EnvyControl blacklists kernel modules and unbinds the dGPU from the PCI bus. Idle power draw is correctly reduced and battery life is fine. The weak point is **suspend/resume reliability**: on Lenovo Legion firmware the dGPU often fails to stay suspended after resume from sleep — it wakes up, stays powered on, or requires manually re-applying `envycontrol` / rebooting to get back to the low-power state.
 2. **`bbswitch`:**  
    Deprecated and non-functional on modern Linux kernels and Ampere/Ada Lovelace architectures.
 3. **`acpi_call` (DKMS):**  
@@ -162,7 +166,9 @@ sudo mkdir -p /var/lib/acpi-override
 sudo cp common/gpu-off.aml /var/lib/acpi-override/gpu-off.aml
 sudo install -Dm755 distros/debian-initramfs/gpu-kill /etc/initramfs-tools/hooks/gpu-kill
 
-# Add parameters to GRUB_CMDLINE_LINUX_DEFAULT in /etc/default/grub, then:
+# Add parameters to GRUB_CMDLINE_LINUX_DEFAULT in /etc/default/grub, e.g.:
+# GRUB_CMDLINE_LINUX_DEFAULT="quiet splash rd.driver.blacklist=nouveau,nvidia,nvidia_drm,nvidia_modeset modprobe.blacklist=nouveau,nvidia,nvidia_drm,nvidia_modeset systemd.mask=nvidia-fallback.service"
+# then:
 sudo update-initramfs -u -k all
 sudo update-grub
 ```
@@ -172,10 +178,31 @@ sudo update-grub
 ```bash
 # 1. The NVIDIA GPU should not appear on the PCI bus:
 lspci | grep -i nvidia
+# expected: no output
 
 # 2. Reading PCI power state should return no device:
 cat /sys/bus/pci/devices/0000:01:00.0/power_state 2>/dev/null || echo "dGPU is completely powered off and unmapped."
+
+# 3. SSDT override must be loaded, with no errors for PEGP/OPCE:
+journalctl -k -b 0 | grep -iE "acpi.*(error|PEGP|OPCE|NvidiaOf|override)" | head -n 20
+# expected: acpi_override loaded, no AE_* errors mentioning PEGP/OPCE
+
+# 4. Actual battery draw (unplugged, idle, low brightness):
+cat /sys/class/power_supply/BAT*/power_now 2>/dev/null || upower -d | grep -A2 -i "energy-rate\|power"
+# expected idle: roughly 7-12W depending on brightness, WiFi and CPU governor
 ```
+
+#### 😴 Suspend / resume test
+
+Unlike `envycontrol`, the dGPU has no PCI node here so there is nothing to wake up. Verify:
+
+```bash
+systemctl suspend
+# ... resume, then re-run:
+lspci | grep -i nvidia || echo "still off after resume"
+```
+
+> **Note on battery claims (6–8h):** measured unplugged, idle/light browsing, ~50% brightness, WiFi on, `amd_pstate` balanced. Heavy load, max brightness or USB peripherals will shorten it.
 
 ### ⏪ Uninstallation
 
@@ -204,12 +231,16 @@ sudo reboot
 > W Legionie 5 Pro (16ACH6H) fizyczny port HDMI oraz linie DisplayPort w tylnym gnieździe USB-C są **na stałe podłączone elektrycznie pod układ dGPU NVIDIA**.  
 > Fizyczne odcięcie zasilania dGPU oznacza, że **zewnętrzne monitory podłączone bezpośrednio do tych portów nie będą otrzymywać sygnału**. Wbudowana matryca laptopa (eDP) jest podpięta bezpośrednio pod zintegrowaną grafikę AMD Radeon i działa bez przeszkód z pełną częstotliwością odświeżania oraz regulacją jasności. Zewnętrzne ekrany działają wyłącznie przez karty USB DisplayLink.
 
+> [!WARNING]
+> **SECURE BOOT MUSI BYĆ WYŁĄCZONY**  
+> Wczytanie własnej tabeli SSDT przez `acpi_override` (`CONFIG_ACPI_TABLE_UPGRADE`) jest blokowane przy włączonym Secure Boot. Wyłącz Secure Boot w BIOS/UEFI przed instalacją, w przeciwnym razie `gpu-off.aml` zostanie po cichu zignorowany i dGPU pozostanie zasilone.
+
 ### 🔍 Dlaczego standardowe narzędzia zawodzą na Legionie?
 
 Typowe próby wyłączenia dGPU pod Linuksem na laptopach Legion z reguły nie dają zamierzonego efektu:
 
 1. **`envycontrol -s integrated` lub ręczne odłączanie w udev:**  
-   EnvyControl dodaje moduły jądra do blacklisty (w modprobe) i wysyła `1` do `/sys/bus/pci/devices/.../remove`. Jednak w oprogramowaniu układowym (BIOS/ACPI) Lenovo Legion odłączenie sterownika lub usunięcie urządzenia z magistrali PCI pozostawia kartę w stanie **D0**. Chip nadal pobiera **15–25W**, drenując baterię w półtorej godziny.
+   EnvyControl dodaje moduły jądra do blacklisty (w modprobe) i odpina dGPU z magistrali PCI. Pobór w spoczynku jest prawidłowo obniżony i czas na baterii jest w porządku. Słabym punktem jest **niezawodność usypiania/wybudzania**: na firmware Lenovo Legion karta po wybudzeniu ze sleep często nie wraca do stanu niskiego poboru — wybudza się, zostaje zasilona albo wymaga ręcznego ponownego wywołania `envycontrol` / rebootu.
 2. **`bbswitch`:**  
    Przestarzały moduł, nie działa na współczesnych kernelach ani na architekturach Ampere/Ada Lovelace.
 3. **`acpi_call` (DKMS):**  
@@ -334,7 +365,9 @@ sudo mkdir -p /var/lib/acpi-override
 sudo cp common/gpu-off.aml /var/lib/acpi-override/gpu-off.aml
 sudo install -Dm755 distros/debian-initramfs/gpu-kill /etc/initramfs-tools/hooks/gpu-kill
 
-# Dopisanie parametrów do GRUB_CMDLINE_LINUX_DEFAULT w /etc/default/grub, a następnie:
+# Dopisanie parametrów do GRUB_CMDLINE_LINUX_DEFAULT w /etc/default/grub, np.:
+# GRUB_CMDLINE_LINUX_DEFAULT="quiet splash rd.driver.blacklist=nouveau,nvidia,nvidia_drm,nvidia_modeset modprobe.blacklist=nouveau,nvidia,nvidia_drm,nvidia_modeset systemd.mask=nvidia-fallback.service"
+# a następnie:
 sudo update-initramfs -u -k all
 sudo update-grub
 ```
@@ -342,9 +375,33 @@ sudo update-grub
 ### 🔍 Weryfikacja po restarcie
 
 ```bash
+# 1. Karta NVIDIA nie powinna być widoczna na magistrali PCI:
 lspci | grep -i nvidia
+# oczekiwane: brak wyjścia
+
+# 2. Odczyt stanu zasilania PCI powinien zwrócić brak urządzenia:
 cat /sys/bus/pci/devices/0000:01:00.0/power_state 2>/dev/null || echo "Karta jest fizycznie wyłączona i usunięta z magistrali."
+
+# 3. Nadpisanie SSDT musi być załadowane, bez błędów PEGP/OPCE:
+journalctl -k -b 0 | grep -iE "acpi.*(error|PEGP|OPCE|NvidiaOf|override)" | head -n 20
+# oczekiwane: acpi_override załadowany, brak błędów AE_* dla PEGP/OPCE
+
+# 4. Rzeczywisty pobór z baterii (odłączony zasilacz, spoczynek, niska jasność):
+cat /sys/class/power_supply/BAT*/power_now 2>/dev/null || upower -d | grep -A2 -i "energy-rate\|power"
+# typowy idle: ok. 7-12W w zależności od jasności, WiFi i governora CPU
 ```
+
+#### 😴 Test uśpienia / wybudzenia
+
+W przeciwieństwie do `envycontrol`, dGPU nie ma tu węzła PCI, więc nie ma czego wybudzić. Sprawdź:
+
+```bash
+systemctl suspend
+# ... wybudź, potem ponownie:
+lspci | grep -i nvidia || echo "po resume nadal wyłączona"
+```
+
+> **Uwaga do deklaracji 6–8h:** pomiar bez zasilacza, spoczynek / lekkie przeglądanie, ~50% jasności, WiFi włączone, `amd_pstate` balanced. Duże obciążenie, maksymalna jasność albo urządzenia USB ten czas skrócą.
 
 ### ⏪ Przywracanie ustawień fabrycznych (odinstalowanie)
 

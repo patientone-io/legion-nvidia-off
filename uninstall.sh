@@ -26,7 +26,8 @@ log_info "Restoring default dGPU hardware configuration..."
 rm -f /etc/modprobe.d/blacklist-nvidia.conf
 rm -f /etc/udev/rules.d/99-nvidia-remove.rules
 rm -f /etc/dracut.conf.d/gpu-kill.conf
-rm -rf /etc/dracut.conf.d/acpi
+rm -f /etc/dracut.conf.d/acpi/gpu-off.aml
+rmdir --ignore-fail-on-non-empty /etc/dracut.conf.d/acpi 2>/dev/null || true
 rm -f /var/lib/acpi-override/gpu-off.aml
 rm -f /etc/initramfs-tools/hooks/gpu-kill
 
@@ -46,6 +47,16 @@ fi
 if command -v grubby &>/dev/null; then
     grubby --update-kernel=ALL --remove-args="rd.driver.blacklist=nouveau,nvidia,nvidia_drm,nvidia_modeset modprobe.blacklist=nouveau,nvidia,nvidia_drm,nvidia_modeset systemd.mask=nvidia-fallback.service" 2>/dev/null || true
     log_success "Cleaned kernel arguments via grubby."
+fi
+
+# Clean kernel command line parameters on Debian / Ubuntu (/etc/default/grub)
+GRUB_DEFAULTS="/etc/default/grub"
+if [[ -f "$GRUB_DEFAULTS" ]] && grep -q "rd.driver.blacklist=" "$GRUB_DEFAULTS"; then
+    sed -i 's/rd\.driver\.blacklist=[^ "]*//g' "$GRUB_DEFAULTS"
+    sed -i 's/modprobe\.blacklist=[^ "]*//g' "$GRUB_DEFAULTS"
+    sed -i 's/systemd\.mask=nvidia-fallback\.service//g' "$GRUB_DEFAULTS"
+    sed -i 's/  */ /g; s/" /"/g; s/ "/"/g' "$GRUB_DEFAULTS"
+    log_success "Cleaned dGPU blacklist parameters from $GRUB_DEFAULTS."
 fi
 
 log_info "Rebuilding initramfs image..."
